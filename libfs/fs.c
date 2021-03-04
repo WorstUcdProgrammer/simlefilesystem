@@ -45,6 +45,8 @@ uint16_t *FAT;
 
 struct file_entry Root[FS_FILE_MAX_COUNT];
 
+int mounted = 0;
+
 int fs_mount(const char *diskname)
 {
 	if (block_disk_open(diskname)) {
@@ -63,7 +65,7 @@ int fs_mount(const char *diskname)
 
 	}
 
-	FAT = (uint16_t *) malloc(sizeof(uint16_t) * 2048 * (unsigned int) superblock.FAT_count);
+	FAT = (uint16_t *) malloc(sizeof(uint16_t) * 2048 * superblock.FAT_count);
 
 	uint16_t *tmp_fat = FAT;
 
@@ -71,17 +73,26 @@ int fs_mount(const char *diskname)
 
 		block_read(i + 1, tmp_fat);
 
-		tmp_fat = tmp_fat + superblock.total_data_blocks;
+		tmp_fat = tmp_fat + 2048;
 
 	}
 
 	block_read(superblock.root, &Root[0]);
+
+	mounted = 1;
 
 	return 0;
 }
 
 int fs_umount(void)
 {
+	/* no disk mounted */
+	if (!mounted) {
+
+		return -1;
+
+	}
+
 	block_write(0, &superblock);
 
 	uint16_t *tmp_fat = FAT;
@@ -90,11 +101,11 @@ int fs_umount(void)
 
 		block_write(i + 1, tmp_fat);
 
-		tmp_fat = tmp_fat + superblock.total_data_blocks;
+		tmp_fat = tmp_fat + 2048;
 
 	}
 
-	block_write(superblock.root, &Root);
+	block_write(superblock.root, &Root[0]);
 
 	if (block_disk_close()) {
 
@@ -104,11 +115,20 @@ int fs_umount(void)
 
 	free(FAT);
 
+	mounted = 0;
+
 	return 0;
 }
 
 int fs_info(void)
 {
+	/* no disk mounted */
+	if (!mounted) {
+
+		return -1;
+
+	}
+
 	printf("FS Info:\n");
 	printf("total_blk_count=%d\n", superblock.total_block_disk);
 	printf("fat_blk_count=%d\n", superblock.FAT_count);
@@ -154,18 +174,144 @@ int fs_info(void)
 
 int fs_create(const char *filename)
 {
-	printf("%s\n", filename);
+	/* no disk mounted */
+	if (!mounted) {
+
+		return -1;
+
+	}
+
+	/* invalid filename */
+	if (strlen(filename) > 15) {
+		
+		return -1;
+
+	}
+
+	char empty = '\0';
+
+	/* not null terminated */
+	if (memcmp(filename + strlen(filename), &empty, 1)) {
+
+		return -1;
+
+	}
+
+	/* existing filename */
+	for (int i = 0; i < FS_FILE_MAX_COUNT; i++) {
+
+		if(!memcmp(&Root[i].filename, filename, strlen(filename))) {
+
+			return -1;
+
+		}
+	}
+
+	int first_root_empty_index = -1;
+
+	for (int i = 0; i < FS_FILE_MAX_COUNT; i++) {
+
+		uint8_t empty = '\0';
+
+		if(!memcmp(&Root[i].filename, &empty, 1)) {
+
+				first_root_empty_index = i;
+				break;
+
+		}
+	}
+
+	/* no more space */
+	if (first_root_empty_index == -1) {
+
+		return -1;
+
+	}
+
+	memcpy(&Root[first_root_empty_index].filename, filename, strlen(filename) + 1);
+
+	Root[first_root_empty_index].size = 0;
+
+	Root[first_root_empty_index].index = FAT_EOC;
+
+	block_write(superblock.root, &Root[0]);
+
 	return 0;
 }
 
 int fs_delete(const char *filename)
 {
-	printf("%s\n", filename);
+	/* no disk mounted */
+	if (!mounted) {
+
+		return -1;
+
+	}
+
+	/* invalid filename */
+	if (strlen(filename) > 15) {
+		
+		return -1;
+
+	}
+
+	char empty = '\0';
+
+	/* not null terminated */
+	if (memcmp(filename + strlen(filename), &empty, 1)) {
+
+		return -1;
+
+	}
+
+	int root_file_index = -1;
+
+	for (int i = 0; i < FS_FILE_MAX_COUNT; i++) {
+
+		if(!memcmp(&Root[i].filename, filename, strlen(filename))) {
+
+				root_file_index = i;
+				break;
+
+		}
+	}
+
+	/* no file found */
+	if (root_file_index == -1) {
+
+		return -1;
+
+	}
+
+	uint8_t empty_byte = '\0';
+
+	memcpy(&Root[root_file_index].filename, &empty_byte, 1);
+
 	return 0;
 }
 
 int fs_ls(void)
 {
+	/* no disk mounted */
+	if (!mounted) {
+
+		return -1;
+
+	}
+
+	printf("FS Ls:\n");
+
+	for (int i = 0; i < FS_FILE_MAX_COUNT; i++) {
+
+		uint8_t empty = '\0';
+
+		if(memcmp(&Root[i].filename, &empty, 1)) {
+			
+			printf("file: %s, size: %d, data_blk: %d\n", (char *) &Root[i].filename, Root[i].size, Root[i].index);
+
+		}
+	}
+
 	return 0;
 }
 
