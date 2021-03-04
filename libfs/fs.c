@@ -3,6 +3,10 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include "disk.h"
 #include "fs.h"
@@ -38,6 +42,12 @@ struct file_entry {
 	uint16_t Padding_10[5];
 };
 
+struct ECS150fd {
+	char filename[16];
+	int fd;
+	int offset;
+};
+
 /* Global variables */
 struct superblock superblock;
 
@@ -46,6 +56,10 @@ uint16_t *FAT;
 struct file_entry Root[FS_FILE_MAX_COUNT];
 
 int mounted = 0;
+
+int fd_count = 0;
+
+struct ECS150fd fds[FS_OPEN_MAX_COUNT];
 
 int fs_mount(const char *diskname)
 {
@@ -78,6 +92,14 @@ int fs_mount(const char *diskname)
 	}
 
 	block_read(superblock.root, &Root[0]);
+
+	for (int i = 0; i < FS_OPEN_MAX_COUNT; i++) {
+
+		fds[i].fd = -1;
+
+		fds[i].offset = 0;
+
+	}
 
 	mounted = 1;
 
@@ -182,7 +204,7 @@ int fs_create(const char *filename)
 	}
 
 	/* invalid filename */
-	if (strlen(filename) > 15) {
+	if (strlen(filename) > FS_FILENAME_LEN - 1) {
 		
 		return -1;
 
@@ -249,7 +271,7 @@ int fs_delete(const char *filename)
 	}
 
 	/* invalid filename */
-	if (strlen(filename) > 15) {
+	if (strlen(filename) > FS_FILENAME_LEN - 1) {
 		
 		return -1;
 
@@ -317,26 +339,192 @@ int fs_ls(void)
 
 int fs_open(const char *filename)
 {
-	printf("%s\n", filename);
-	return 0;
+	/* no disk mounted */
+	if (!mounted) {
+
+		return -1;
+
+	}
+
+	/* max files reached*/
+	if (fd_count == FS_OPEN_MAX_COUNT) {
+		
+		return -1;
+	}
+
+	/* invalid filename */
+	if (strlen(filename) > FS_FILENAME_LEN - 1) {
+		
+		return -1;
+
+	}
+
+	char empty = '\0';
+
+	/* not null terminated */
+	if (memcmp(filename + strlen(filename), &empty, 1)) {
+
+		return -1;
+
+	}
+
+	int new_fd = open(filename, O_RDWR, 0644);
+
+	if (new_fd == -1) {
+
+		return -1;
+
+	}
+
+	int index = -1;
+
+	for (int i = 0; i < FS_OPEN_MAX_COUNT; i++) {
+
+		if (fds[i].fd == -1) {
+
+			index = i;
+
+		}
+	}
+
+	strcpy(&fds[index].filename[0], filename);
+
+	fds[index].fd = new_fd;
+
+	fd_count++;
+
+	return new_fd;
 }
 
 int fs_close(int fd)
 {
-	printf("%d\n", fd);
+	/* no disk mounted */
+	if (!mounted) {
+
+		return -1;
+
+	}
+
+	/* out of bound */
+	if (fd < 0) {
+
+		return -1;
+	}
+
+	int index = -1;
+
+	for (int i = 0; i < FS_OPEN_MAX_COUNT; i++) {
+
+		if (fds[i].fd == fd) {
+
+			index = i;
+			break;
+
+		}
+	}
+
+	/* fd not found */
+	if (index == -1) {
+
+		return -1;
+
+	}
+
+	close(fd);
+
+	fds[index].fd = -1;
+
+	fds[index].offset = 0;
+
+	fd_count--;
+
 	return 0;
 }
 
 int fs_stat(int fd)
 {
-	printf("%d\n", fd);
-	return 0;
+	/* no disk mounted */
+	if (!mounted) {
+
+		return -1;
+
+	}
+
+	/* out of bound */
+	if (fd < 0) {
+
+		return -1;
+	}
+
+	int index = -1;
+
+	for (int i = 0; i < FS_OPEN_MAX_COUNT; i++) {
+
+		if (fds[i].fd == fd) {
+
+			index = i;
+			break;
+
+		}
+	}
+
+	/* fd not found */
+	if (index == -1) {
+
+		return -1;
+
+	}
+
+	struct stat buf;
+
+	fstat(fd, &buf);
+
+	return buf.st_size;
 }
 
 int fs_lseek(int fd, size_t offset)
 {
-	printf("%d\n", fd);
-	(void) offset;
+	/* no disk mounted */
+	if (!mounted) {
+
+		return -1;
+
+	}
+
+	/* out of bound */
+	if (fd < 0) {
+
+		return -1;
+	}
+
+	int index = -1;
+
+	for (int i = 0; i < FS_OPEN_MAX_COUNT; i++) {
+
+		if (fds[i].fd == fd) {
+
+			index = i;
+			break;
+
+		}
+	}
+
+	/* fd not found */
+	if (index == -1) {
+
+		return -1;
+
+	}
+
+	/* larger than file size */
+	if ((int) offset > fs_stat(fd)) {
+
+		return -1;
+
+	}
+
+	fds[index].offset = offset;
+
 	return 0;
 }
 
