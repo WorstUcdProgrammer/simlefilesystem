@@ -63,7 +63,7 @@ int fs_mount(const char *diskname)
 
 	}
 
-	FAT = (uint16_t *) malloc(sizeof(uint16_t) * superblock.total_data_blocks * (unsigned int) superblock.FAT_count);
+	FAT = (uint16_t *) malloc(sizeof(uint16_t) * 2048 * (unsigned int) superblock.FAT_count);
 
 	uint16_t *tmp_fat = FAT;
 
