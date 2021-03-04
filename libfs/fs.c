@@ -48,7 +48,9 @@ struct file_entry Root[FS_FILE_MAX_COUNT];
 int fs_mount(const char *diskname)
 {
 	if (block_disk_open(diskname)) {
+
 		return -1;
+
 	}
 
 	block_read(0, &superblock);
@@ -56,19 +58,24 @@ int fs_mount(const char *diskname)
 	char sig[8] = {'E','C','S','1','5','0','F','S'};
 
 	if (memcmp(&superblock.signature, &sig, 8)) {
+
 		return -1;
+
 	}
 
-	FAT = (uint16_t *) malloc(sizeof(uint16_t) * superblock.FAT_count);
+	FAT = (uint16_t *) malloc(sizeof(uint16_t) * superblock.total_data_blocks * (unsigned int) superblock.FAT_count);
 
 	uint16_t *tmp_fat = FAT;
 
 	for (int i = 0; i < superblock.FAT_count; i++) {
+
 		block_read(i + 1, tmp_fat);
-		tmp_fat++;
+
+		tmp_fat = tmp_fat + superblock.total_data_blocks;
+
 	}
 
-	block_read(superblock.root, &Root);
+	block_read(superblock.root, &Root[0]);
 
 	return 0;
 }
@@ -80,14 +87,19 @@ int fs_umount(void)
 	uint16_t *tmp_fat = FAT;
 
 	for (int i = 0; i < superblock.FAT_count; i++) {
+
 		block_write(i + 1, tmp_fat);
-		tmp_fat++;
+
+		tmp_fat = tmp_fat + superblock.total_data_blocks;
+
 	}
 
 	block_write(superblock.root, &Root);
 
 	if (block_disk_close()) {
+
 		return -1;
+
 	}
 
 	free(FAT);
@@ -103,6 +115,40 @@ int fs_info(void)
 	printf("rdir_blk=%d\n", superblock.root);
 	printf("data_blk=%d\n", superblock.data);
 	printf("data_blk_count=%d\n", superblock.total_data_blocks);
+
+	int free_fat_count = 0;
+
+	uint16_t *tmp_fat = FAT;
+
+	for (int i = 0; i < superblock.total_data_blocks; i++) {
+
+		if (*tmp_fat == 0) {
+
+			free_fat_count++;
+
+		}
+
+		tmp_fat++;
+
+	}
+
+	printf("fat_free_ratio=%d/%d\n", free_fat_count, superblock.total_data_blocks);
+
+	int free_root_count = 0;
+
+	for (int i = 0; i < FS_FILE_MAX_COUNT; i++) {
+
+		uint8_t empty = '\0';
+
+		if(!memcmp(&Root[i].filename, &empty, 1)) {
+
+			free_root_count++;
+
+		}
+	}
+
+	printf("rdir_free_ratio=%d/%d\n", free_root_count, FS_FILE_MAX_COUNT);
+
 	return 0;
 }
 
