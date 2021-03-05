@@ -3,8 +3,8 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -129,6 +129,15 @@ int fs_umount(void)
 
 	block_write(superblock.root, &Root[0]);
 
+	for (int i = 0; i < FS_OPEN_MAX_COUNT; i++) {
+
+		if (fds[i].fd != -1) {
+
+			return -1;
+
+		}
+	}
+
 	if (block_disk_close()) {
 
 		return -1;
@@ -229,6 +238,15 @@ int fs_create(const char *filename)
 		}
 	}
 
+	for (int i = 0; i < FS_OPEN_MAX_COUNT; i++) {
+
+		if (!strcmp(&fds[i].filename[0], filename)) {
+
+			return -1;
+			
+		}
+	}
+
 	int first_root_empty_index = -1;
 
 	for (int i = 0; i < FS_FILE_MAX_COUNT; i++) {
@@ -257,6 +275,8 @@ int fs_create(const char *filename)
 	Root[first_root_empty_index].index = FAT_EOC;
 
 	block_write(superblock.root, &Root[0]);
+
+	open(filename, O_CREAT, 0644);
 
 	return 0;
 }
@@ -368,7 +388,24 @@ int fs_open(const char *filename)
 
 	}
 
-	int new_fd = open(filename, O_RDWR, 0644);
+	int in_root = 0;
+
+	for (int i = 0; i < FS_FILE_MAX_COUNT; i++) {
+
+		if (!memcmp(&Root[i].filename, &filename[0], strlen(filename))) {
+
+			in_root = 1;
+
+		}
+	}
+
+	if (!in_root) {
+
+		return -1;
+
+	}
+
+	int new_fd = open(filename, O_RDWR);
 
 	if (new_fd == -1) {
 
@@ -383,6 +420,7 @@ int fs_open(const char *filename)
 		if (fds[i].fd == -1) {
 
 			index = i;
+			break;
 
 		}
 	}
@@ -475,11 +513,24 @@ int fs_stat(int fd)
 
 	}
 
-	struct stat buf;
+	//struct stat buf;
 
-	fstat(fd, &buf);
+	//fstat(fd, &buf);
 
-	return buf.st_size;
+	int root_index = -1;
+
+	for (int i = 0; i < FS_FILE_MAX_COUNT; i++) {
+
+		if (!memcmp(&Root[i].filename, &fds[index].filename[0], strlen(fds[index].filename))) {
+
+			root_index = i;
+			break;
+
+		}
+	}
+
+	//return buf.st_size;
+	return Root[root_index].size;
 }
 
 int fs_lseek(int fd, size_t offset)
@@ -487,12 +538,16 @@ int fs_lseek(int fd, size_t offset)
 	/* no disk mounted */
 	if (!mounted) {
 
+		//printf("not mounted\n");
+
 		return -1;
 
 	}
 
 	/* out of bound */
 	if (fd < 0) {
+
+		//printf("OOB\n");
 
 		return -1;
 	}
@@ -512,12 +567,16 @@ int fs_lseek(int fd, size_t offset)
 	/* fd not found */
 	if (index == -1) {
 
+		//printf("fdNF\n");
+
 		return -1;
 
 	}
 
 	/* larger than file size */
 	if ((int) offset > fs_stat(fd)) {
+
+		//printf("larger\n");
 
 		return -1;
 
@@ -568,6 +627,8 @@ int find_first_block(int offset, int first_index)
 
 	int block = first_index;
 
+	rest_offset -= 4096;
+
 	while (rest_offset > 0 && block != FAT_EOC) {
 
 		rest_offset -= 4096;
@@ -579,12 +640,224 @@ int find_first_block(int offset, int first_index)
 	return block;
 }
 
+int find_first_fit()
+{
+	int index = -1;
+
+	uint16_t *tmp_fat = FAT;
+
+	for (int i = 0; i < superblock.total_data_blocks; i++) {
+
+		if (*tmp_fat == 0) {
+			
+			index = i;
+			break;
+
+		}
+		
+		tmp_fat++;
+	}
+
+	return index;
+}
+
 int fs_write(int fd, void *buf, size_t count)
 {
-	printf("%d\n", fd);
-	block_read(count, buf);
-	(void) count;
-	return 0;
+	if (!mounted) {
+
+		return -1;
+
+	}
+
+	if (fd < 0) {
+
+		return -1;
+
+	}
+
+	if (buf == NULL) {
+
+		return -1;
+		
+	}
+
+	int index_in_fds = find_index_in_fds(fd);
+
+	if (index_in_fds == -1) {
+
+		return -1;
+
+	}
+
+	char filename[FS_FILENAME_LEN];
+
+	strcpy(&filename[0], &fds[index_in_fds].filename[0]);
+
+	int index_in_root = find_index_in_root(&filename[0]);
+
+	int index_in_FAT = Root[index_in_root].index;
+
+	int already_written = 0;
+
+	int first_block = find_first_block(fds[index_in_fds].offset, index_in_FAT);
+
+	//printf("firstblock %d\n", first_block);
+
+	int current_FAT = first_block;
+
+	int remainder = fds[index_in_fds].offset % 4096;
+
+	struct stat size_buf;
+
+	fstat(fd, &size_buf);
+
+	int rest_count = count;
+
+	int extra_block = 0;
+
+	while ((unsigned) already_written < count) {
+
+		uint8_t *bounce_buffer = (uint8_t *) malloc(4096);
+		
+		if (first_block == FAT_EOC) {
+
+			int available_FAT = find_first_fit();
+
+			//printf("firstfit %d\n", available_FAT);
+
+			if (available_FAT == -1) {
+
+				free(bounce_buffer);
+
+				break;
+
+			} else if (current_FAT == FAT_EOC) {
+
+				//printf("expand one!\n");
+
+				Root[index_in_root].index = available_FAT;
+
+				FAT[available_FAT] = FAT_EOC;
+
+				current_FAT = available_FAT;
+
+				first_block = available_FAT;
+
+			} else {
+
+				FAT[available_FAT] = FAT_EOC;
+
+				FAT[current_FAT] = available_FAT;
+
+				current_FAT = available_FAT;
+
+				first_block = available_FAT;
+
+			}
+
+			extra_block++;
+
+		}
+
+		if (remainder == 0 && remainder + rest_count >= 4096) {
+
+			block_read(superblock.data + first_block, bounce_buffer);
+
+			memcpy(bounce_buffer, buf + already_written, 4096);
+
+			block_write(superblock.data + first_block, bounce_buffer);
+
+			rest_count = rest_count - 4096;
+
+			already_written = already_written + 4096;
+
+			remainder = 0;
+
+			first_block = FAT[first_block];
+
+			free(bounce_buffer);
+
+			continue;
+
+		}
+
+		if (remainder == 0 && remainder + rest_count < 4096) {
+
+			//printf("expected\n");
+
+			block_read(superblock.data + first_block, bounce_buffer);
+
+			memcpy(bounce_buffer, buf + already_written, rest_count);
+
+			block_write(superblock.data + first_block, bounce_buffer);
+
+			rest_count = 0;
+
+			already_written = count;
+
+			remainder = rest_count;
+
+			free(bounce_buffer);
+
+			break;
+
+		}
+
+		if (remainder != 0 && remainder + rest_count < 4096) {
+
+			block_read(superblock.data + first_block, bounce_buffer);
+
+			memcpy(bounce_buffer + remainder, buf + already_written, rest_count);
+
+			block_write(superblock.data + first_block, bounce_buffer);
+
+			rest_count = 0;
+
+			already_written = count;
+
+			remainder = remainder + rest_count;
+
+			free(bounce_buffer);
+
+			break;
+
+		}
+
+		if (remainder != 0 && remainder + rest_count >= 4096) {
+
+			block_read(superblock.data + first_block, bounce_buffer);
+
+			memcpy(bounce_buffer + remainder, buf + already_written, 4096 - remainder);
+
+			block_write(superblock.data + first_block, bounce_buffer);
+
+			rest_count = rest_count - (4096 - remainder);
+
+			already_written = already_written + (4096 - remainder);
+
+			remainder = 0;
+
+			free(bounce_buffer);
+
+			continue;
+		}
+	}
+
+	int tmp_offset = fds[index_in_fds].offset + already_written;
+
+	//if (fds[index_in_fds].offset > size_buf.st_size) {
+
+	//	Root[index_in_root].size = fds[index_in_fds].offset;
+
+	//}
+
+	if (tmp_offset > fs_stat(fd)) {
+
+		Root[index_in_root].size = tmp_offset;
+
+	}
+	
+	return already_written;
 }
 
 int fs_read(int fd, void *buf, size_t count)
@@ -596,6 +869,12 @@ int fs_read(int fd, void *buf, size_t count)
 	}
 
 	if (fd < 0) {
+
+		return -1;
+
+	}
+
+	if (buf == NULL) {
 
 		return -1;
 
@@ -633,15 +912,34 @@ int fs_read(int fd, void *buf, size_t count)
 
 	while (first_block != FAT_EOC && rest_count > 0) {
 
-		if (offset_buf + 4096 > size_buf.st_size) {
+		//if (remainder == 0 && rest_count <= 4096 && offset_buf + rest_count > fs_stat(fd)) {
+
+		//	uint8_t *bounce_buffer = (uint8_t *) malloc(4096);
+
+		//	block_read(superblock.data + first_block, bounce_buffer);
+
+		//	memcpy(offset_buf + tmp_buf, bounce_buffer, fs_stat(fd) - offset_buf);
+
+		//	offset_buf = fs_stat(fd);
+
+		//	free(bounce_buffer);
+
+		//	break;
+
+		//}
+
+		// if (remainder + rest_count <= 4096 && fds[index_in_fds].offset + offset_buf + rest_count > fs_stat(fd)) {
+		if (remainder + rest_count <= 4096 && fds[index_in_fds].offset + offset_buf + rest_count > fs_stat(fd)) {
+
+			//printf("aaa\n");
 
 			uint8_t *bounce_buffer = (uint8_t *) malloc(4096);
 
 			block_read(superblock.data + first_block, bounce_buffer);
 
-			memcpy(offset_buf + tmp_buf, bounce_buffer + remainder, size_buf.st_size - offset_buf);
+			memcpy(offset_buf + tmp_buf, bounce_buffer + remainder, fs_stat(fd) - (offset_buf + fds[index_in_fds].offset));
 
-			offset_buf = size_buf.st_size;
+			offset_buf = fs_stat(fd) - fds[index_in_fds].offset;
 
 			free(bounce_buffer);
 
@@ -649,7 +947,24 @@ int fs_read(int fd, void *buf, size_t count)
 
 		}
 
+		if (fs_stat(fd) - fds[index_in_fds].offset + offset_buf <= (4096 - remainder) && fds[index_in_fds].offset + offset_buf + rest_count > fs_stat(fd)) {
+
+			uint8_t *bounce_buffer = (uint8_t *) malloc(4096);
+
+			block_read(superblock.data + first_block, bounce_buffer);
+
+			memcpy(offset_buf + tmp_buf, bounce_buffer + remainder, fs_stat(fd) - (offset_buf + fds[index_in_fds].offset));
+
+			offset_buf = fs_stat(fd) - fds[index_in_fds].offset;
+
+			free(bounce_buffer);
+
+			break;
+		}
+
 		if (remainder == 0 && remainder + rest_count >= 4096) {
+
+			//printf("bbb\n");
 
 			uint8_t *bounce_buffer = (uint8_t *) malloc(4096);
 
@@ -667,15 +982,21 @@ int fs_read(int fd, void *buf, size_t count)
 
 			free(bounce_buffer);
 
+			continue;
+
 		}
 
 		if (remainder != 0 && remainder + rest_count <= 4096) {
+
+			//printf("ccc\n");
 
 			uint8_t *bounce_buffer = (uint8_t *) malloc(4096);
 
 			block_read(superblock.data + first_block, bounce_buffer);
 
-			memcpy(tmp_buf, bounce_buffer, count);
+			memcpy(tmp_buf, bounce_buffer + remainder, count);
+
+			offset_buf = offset_buf + rest_count;
 
 			free(bounce_buffer);
 
@@ -684,6 +1005,10 @@ int fs_read(int fd, void *buf, size_t count)
 		}
 
 		if (remainder != 0 && remainder + rest_count > 4096) {
+
+			//printf("%d\n", remainder);
+
+			//printf("ddd\n");
 
 			uint8_t *bounce_buffer = (uint8_t *) malloc(4096);
 
@@ -701,9 +1026,13 @@ int fs_read(int fd, void *buf, size_t count)
 
 			free(bounce_buffer);
 
+			continue;
+
 		}
 
-		if (remainder == 0 && remainder + rest_count <= 4096) {
+		if (remainder == 0 && remainder + rest_count < 4096) {
+
+			//printf("eee\n");
 
 			uint8_t *bounce_buffer = (uint8_t *) malloc(4096);
 
@@ -722,6 +1051,8 @@ int fs_read(int fd, void *buf, size_t count)
 		}
 
 	}
+
+	fds[index_in_fds].offset = fds[index_in_fds].offset + offset_buf;
 
 	memcpy(buf, tmp_buf, offset_buf);
 
