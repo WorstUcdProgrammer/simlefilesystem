@@ -528,15 +528,58 @@ int fs_lseek(int fd, size_t offset)
 	return 0;
 }
 
-int fs_write(int fd, void *buf, size_t count)
+int find_index_in_fds (int fd) 
 {
-	printf("%d\n", fd);
-	block_write(count, buf);
-	(void) count;
-	return 0;
+	int index = -1;
+
+	for (int i = 0; i < FS_OPEN_MAX_COUNT; i++) {
+
+		if (fds[i].fd == fd) {
+
+			index = i;
+			break;
+
+		}
+	}
+
+	return index;
 }
 
-int fs_read(int fd, void *buf, size_t count)
+int find_index_in_root (char *filename)
+{
+	int index = -1;
+
+	for (int i = 0; i < FS_FILE_MAX_COUNT; i++) {
+
+		if (!memcmp(&Root[i].filename, filename, strlen(filename))) {
+
+			index = i;
+			break;
+
+		}
+	}
+
+	return index;
+}
+
+int find_first_block(int offset, int first_index)
+{
+	int rest_offset = offset;
+
+	int block = first_index;
+
+	while (rest_offset > 0 && block != FAT_EOC) {
+
+		rest_offset -= 4096;
+
+		block = FAT[block];
+
+	}
+
+	return block;
+}
+
+int fs_write(int fd, void *buf, size_t count)
 {
 	printf("%d\n", fd);
 	block_read(count, buf);
@@ -544,3 +587,143 @@ int fs_read(int fd, void *buf, size_t count)
 	return 0;
 }
 
+int fs_read(int fd, void *buf, size_t count)
+{
+	if (!mounted) {
+
+		return -1;
+
+	}
+
+	if (fd < 0) {
+
+		return -1;
+
+	}
+
+	int index_in_fds = find_index_in_fds(fd);
+
+	if (index_in_fds == -1) {
+
+		return -1;
+
+	}
+
+	char filename[FS_FILENAME_LEN];
+
+	strcpy(&filename[0], &fds[index_in_fds].filename[0]);
+
+	int index_in_root = find_index_in_root(&filename[0]);
+
+	int index_in_FAT = Root[index_in_root].index;
+
+	uint8_t *tmp_buf = (uint8_t *) malloc(count);
+
+	int rest_count = count;
+
+	int first_block = find_first_block(fds[index_in_fds].offset, index_in_FAT);
+
+	int remainder = fds[index_in_fds].offset % 4096;
+
+	int offset_buf = 0;
+
+	struct stat size_buf;
+
+	fstat(fd, &size_buf);
+
+	while (first_block != FAT_EOC && rest_count > 0) {
+
+		if (offset_buf + 4096 > size_buf.st_size) {
+
+			uint8_t *bounce_buffer = (uint8_t *) malloc(4096);
+
+			block_read(superblock.data + first_block, bounce_buffer);
+
+			memcpy(offset_buf + tmp_buf, bounce_buffer + remainder, size_buf.st_size - offset_buf);
+
+			offset_buf = size_buf.st_size;
+
+			free(bounce_buffer);
+
+			break;
+
+		}
+
+		if (remainder == 0 && remainder + rest_count >= 4096) {
+
+			uint8_t *bounce_buffer = (uint8_t *) malloc(4096);
+
+			block_read(superblock.data + first_block, bounce_buffer);
+
+			memcpy(offset_buf + tmp_buf, bounce_buffer, 4096);
+
+			rest_count = rest_count - 4096;
+
+			offset_buf = offset_buf + 4096;
+
+			remainder = 0;
+
+			first_block = FAT[first_block];
+
+			free(bounce_buffer);
+
+		}
+
+		if (remainder != 0 && remainder + rest_count <= 4096) {
+
+			uint8_t *bounce_buffer = (uint8_t *) malloc(4096);
+
+			block_read(superblock.data + first_block, bounce_buffer);
+
+			memcpy(tmp_buf, bounce_buffer, count);
+
+			free(bounce_buffer);
+
+			break;
+
+		}
+
+		if (remainder != 0 && remainder + rest_count > 4096) {
+
+			uint8_t *bounce_buffer = (uint8_t *) malloc(4096);
+
+			block_read(superblock.data + first_block, bounce_buffer);
+
+			memcpy(offset_buf + tmp_buf, bounce_buffer + remainder, 4096 - remainder);
+
+			rest_count = rest_count - (4096 - remainder);
+
+			offset_buf = offset_buf + (4096 - remainder);
+
+			remainder = 0;
+
+			first_block = FAT[first_block];
+
+			free(bounce_buffer);
+
+		}
+
+		if (remainder == 0 && remainder + rest_count <= 4096) {
+
+			uint8_t *bounce_buffer = (uint8_t *) malloc(4096);
+
+			block_read(superblock.data + first_block, bounce_buffer);
+
+			memcpy(offset_buf + tmp_buf, bounce_buffer, rest_count);
+
+			offset_buf = offset_buf + rest_count;
+
+			rest_count = 0;
+
+			free(bounce_buffer);
+
+			break;
+
+		}
+
+	}
+
+	memcpy(buf, tmp_buf, offset_buf);
+
+	return offset_buf;
+}
