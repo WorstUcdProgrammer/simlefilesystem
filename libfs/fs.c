@@ -238,15 +238,6 @@ int fs_create(const char *filename)
 		}
 	}
 
-	for (int i = 0; i < FS_OPEN_MAX_COUNT; i++) {
-
-		if (!strcmp(&fds[i].filename[0], filename)) {
-
-			return -1;
-			
-		}
-	}
-
 	int first_root_empty_index = -1;
 
 	for (int i = 0; i < FS_FILE_MAX_COUNT; i++) {
@@ -323,6 +314,19 @@ int fs_delete(const char *filename)
 
 		return -1;
 
+	}
+
+	/* currently open */
+	for (int i = 0; i < FS_OPEN_MAX_COUNT; i++) {
+
+		if (!strcmp(&fds[i].filename[0], filename)) {
+
+			if (fds[i].fd != -1) {
+
+				return -1;
+
+			}			
+		}
 	}
 
 	uint8_t empty_byte = '\0';
@@ -755,6 +759,8 @@ int fs_write(int fd, void *buf, size_t count)
 
 			}
 
+			remainder = 0;
+
 			extra_block++;
 
 		}
@@ -782,8 +788,6 @@ int fs_write(int fd, void *buf, size_t count)
 		}
 
 		if (remainder == 0 && remainder + rest_count < 4096) {
-
-			//printf("expected\n");
 
 			block_read(superblock.data + first_block, bounce_buffer);
 
