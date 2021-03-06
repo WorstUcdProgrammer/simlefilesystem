@@ -829,6 +829,8 @@ int fs_write(int fd, void *buf, size_t count)
 
 		if (remainder != 0 && remainder + rest_count >= 4096) {
 
+			//printf("ttt\n");
+
 			block_read(superblock.data + first_block, bounce_buffer);
 
 			memcpy(bounce_buffer + remainder, buf + already_written, 4096 - remainder);
@@ -838,6 +840,8 @@ int fs_write(int fd, void *buf, size_t count)
 			rest_count = rest_count - (4096 - remainder);
 
 			already_written = already_written + (4096 - remainder);
+
+			first_block = FAT[first_block];
 
 			remainder = 0;
 
@@ -907,6 +911,8 @@ int fs_read(int fd, void *buf, size_t count)
 	int first_block = find_first_block(fds[index_in_fds].offset, index_in_FAT);
 
 	int remainder = fds[index_in_fds].offset % 4096;
+
+	//printf("offset: %d\n", fds[index_in_fds].offset);
 
 	int offset_buf = 0;
 
